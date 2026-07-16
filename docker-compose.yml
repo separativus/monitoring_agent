@@ -1,3 +1,7 @@
+# Pinned project name: keeps the compose project label (and thus the server-side
+# `stack` label) identical on every host, regardless of checkout directory name.
+name: monitoring_agent
+
 services:
 
   # ---------------------------------------------------------------------------

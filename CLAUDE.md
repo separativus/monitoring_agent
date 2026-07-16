@@ -31,12 +31,15 @@ The agent stack is intentionally minimal: two upstream containers (`node-exporte
               +-----------------------+
 
 Hosts running monitoring_agent:
-  hydra  10.0.50.10   (also runs the `monitoring` server stack)
+  hydra  10.0.50.10    (also runs the `monitoring` server stack)
   lab    10.0.50.11
-  live   10.10.10.10  (offsite, reachable via WireGuard)
+  live   10.10.10.10   (offsite, reachable via WireGuard)
+  pi     192.168.10.2  (Raspberry Pi 3 B+, arm64, routed subnet)
 ```
 
-`monitoring/prometheus/prometheus.yml.tmpl` defines six scrape jobs that point at this agent on each host: `node-exporter-{hydra,lab,live}` and `cadvisor-{hydra,lab,live}`, with the `host` label baked in by the server side.
+The server side generates two scrape jobs per host (`node-exporter-<name>` and `cadvisor-<name>`, with the `host` label baked in) from the `MONITOR_HOSTS` variable in `monitoring/.env` — see `monitoring/prometheus/generate-config.sh`.
+
+Not every monitored host runs this agent: `syno` (Synology NAS, 10.0.50.5) has no Docker on ARM DSM and runs a native node_exporter instead (`:node` entry in `MONITOR_HOSTS`, managed per the gotchas in `monitoring/CLAUDE.md`). Don't point `deploy.sh` at it.
 
 ## Tech Stack
 
@@ -51,10 +54,11 @@ Hosts running monitoring_agent:
 ```
 monitoring_agent/
 ├── docker-compose.yml   # the entire agent: 2 services, host bind-mounts, limits, healthchecks
+├── deploy.sh            # ./deploy.sh <user@host> — copies the compose file to ~/monitoring_agent and runs `docker compose up -d` there
 └── CLAUDE.md            # this file
 ```
 
-That's it. Single-file deployment by design.
+That's it. Single-file deployment by design — the agent is identical on every host, nothing host-specific to configure here.
 
 ## Development
 
@@ -90,6 +94,7 @@ curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job:
 ### Configuration
 There is no config file. Everything lives inline in `docker-compose.yml`:
 
+- The compose project name is pinned via top-level `name: monitoring_agent` — this becomes the `stack` label on the server side and must be identical on every host (it used to drift to `monitoring-agent` on lab/live via directory-name derivation; fixed 2026-07-16).
 - `node-exporter` runs with `--path.procfs=/host/proc`, `--path.sysfs=/host/sys`, `--path.rootfs=/rootfs`, and excludes pseudo-filesystems via `--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)`.
 - `cadvisor` is `privileged: true` and bind-mounts the docker socket area read-only.
 - No secrets. No env file. Nothing to vault.
@@ -97,10 +102,18 @@ There is no config file. Everything lives inline in `docker-compose.yml`:
 ## Deployment
 
 ### Hosts
-Deployed identically on all three hosts: `hydra`, `lab`, `live`.
+Deployed identically on all four hosts: `hydra`, `lab`, `live`, `pi`. Both pinned images are multi-arch (amd64 + arm64 verified), so x86 boxes and the Raspberry Pi run the same compose file.
 
 ### Method
-Docker Compose, run from a checkout of this repo. Containers are `restart: unless-stopped` so they survive reboots.
+One command from this repo on hydra:
+
+```bash
+./deploy.sh <user@host>    # e.g. ./deploy.sh runner@192.168.10.2
+```
+
+It copies `docker-compose.yml` to `~/monitoring_agent` on the target and runs `docker compose pull && docker compose up -d` there (no-op if nothing changed). Requires SSH key auth and a docker-group user on the target. Containers are `restart: unless-stopped` so they survive reboots.
+
+For a **new** host, afterwards register it once on the server side: add `<name>:<ip>` to `MONITOR_HOSTS` in `monitoring/.env` on hydra, `docker compose up -d prometheus`, run the verify gate (see `monitoring/CLAUDE.md`).
 
 ### Restart procedure
 
@@ -129,8 +142,8 @@ Scrape cadence is set on the **server** side (`monitoring` repo): `scrape_interv
 
 - **Sibling `monitoring` repo at `/home/runner/monitoring`** — this is the only consumer.
   - Server config: `monitoring/prometheus/prometheus.yml.tmpl`
-  - Targets it expects: `${HYDRA_IP}:9100`, `${HYDRA_IP}:8080`, `${LAB_IP}:9100`, `${LAB_IP}:8080`, `${LIVE_IP}:9100`, `${LIVE_IP}:8080` (template variables interpolated at container start from `.env`).
-  - Server-side relabeling drops `id` and `container_label_.*` labels from cAdvisor to control cardinality — keep that in mind before adding scrape labels here.
+  - Targets it expects: `<ip>:9100` and `<ip>:8080` for every `name:ip` entry in `MONITOR_HOSTS` (in `monitoring/.env`; jobs generated at Prometheus container start).
+  - Server-side relabeling on cAdvisor jobs: drops GitHub-Actions job containers (`name=~"[0-9a-f]{32}_.*"`), promotes the compose project label into a `stack` label, then drops `id` and `container_label_.*` to control cardinality — keep that in mind before adding scrape labels here.
 - **Grafana** on hydra (`monitoring` repo, port `3000`) consumes Prometheus as its only datasource.
 - No alerting, no remote-write, no push gateway.
 
@@ -155,11 +168,12 @@ These are 2026-current notes worth knowing before making changes:
 
 ## Gotchas & Known Issues
 
-- **`live` host symlink quirk.** This agent runs on `live` (10.10.10.10). On `live`, restarting `dockerd` will destroy data unless `/home/ameyze/ameyze-live` symlink → `ameyze_live` is intact. Verify the symlink **before** running `docker compose down` or restarting Docker on that host. (See `~/.claude/projects/-home-runner/memory/ameyze_live_path_quirk.md`.)
+- **`live` host symlink quirk — resolved.** The Django stack on `live` used to depend on a `/home/ameyze/ameyze-live` → `ameyze_live` symlink; restarting Docker without it destroyed data once. Verified 2026-07-16: all bind mounts now point at the real `/home/ameyze/ameyze_live/...` path, the symlink is gone and no longer needed. (History: `~/.claude/projects/-home-runner/memory/ameyze_live_path_quirk.md`.)
 - **`live` is offsite over WireGuard.** Prometheus on `hydra` scrapes `live:9100` and `live:8080` through the WG tunnel. If WG is down, you'll see scrape failures for both `node-exporter-live` and `cadvisor-live`, not an agent problem.
 - **cAdvisor needs `privileged: true`.** This is upstream-required, not a config mistake. It needs raw access to cgroups + the docker socket area.
 - **Filesystem mount excludes use `$$` in compose YAML.** The regex `^/(sys|proc|dev|host|etc)($$|/)` uses double-dollar to escape compose's variable interpolation — single `$` would break the regex. Don't "fix" it.
 - **Port collisions.** `:8080` is a popular port; check `ss -tlnp | grep 8080` before deploying on a new host. Harbor on `hydra` uses different ports, but other services may not.
+- **`pi` is a Raspberry Pi 3 B+ with 1 GB RAM** already running AdGuard, step-ca and sync containers. The agent's actual footprint there is ~95 MiB (node-exporter ~23 MiB, cAdvisor ~70 MiB at ~7 % CPU) — fine, but don't raise the cAdvisor limits or lower its `housekeeping_interval` on that host.
 - **Image registry.** Images come from Docker Hub and `gcr.io`, **not** from `hydra.registry.com` (the homelab Harbor). If outbound DNS/egress is restricted, mirror them into Harbor first.
 - **No dashboards or alert rules in this repo.** Those live in the `monitoring` sibling under `monitoring/grafana/dashboards` and (if/when added) Prometheus rule files.
 
