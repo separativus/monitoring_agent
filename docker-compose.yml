@@ -8,7 +8,7 @@ services:
   # Node Exporter - Host metrics (CPU, RAM, disk, network)
   # ---------------------------------------------------------------------------
   node-exporter:
-    image: prom/node-exporter:v1.11.0
+    image: prom/node-exporter:v1.12.1
     container_name: node-exporter
     restart: unless-stopped
     volumes:
