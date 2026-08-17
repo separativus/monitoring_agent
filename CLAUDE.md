@@ -34,7 +34,7 @@ Hosts running monitoring_agent:
   hydra  10.0.50.10    (also runs the `monitoring` server stack)
   lab    10.0.50.11
   live   10.10.10.10   (offsite, reachable via WireGuard)
-  pi     192.168.10.2  (Raspberry Pi 3 B+, arm64, routed subnet)
+  pi     192.168.100.2 (Raspberry Pi 3 B+, arm64, stretched service VLAN 100)
 ```
 
 The server side generates two scrape jobs per host (`node-exporter-<name>` and `cadvisor-<name>`, with the `host` label baked in) from the `MONITOR_HOSTS` variable in `monitoring/.env` — see `monitoring/prometheus/generate-config.sh`.
@@ -108,7 +108,7 @@ Deployed identically on all four hosts: `hydra`, `lab`, `live`, `pi`. Both pinne
 One command from this repo on hydra:
 
 ```bash
-./deploy.sh <user@host>    # e.g. ./deploy.sh runner@192.168.10.2
+./deploy.sh <user@host>    # e.g. ./deploy.sh runner@192.168.100.2
 ```
 
 It copies `docker-compose.yml` to `~/monitoring_agent` on the target and runs `docker compose pull && docker compose up -d` there (no-op if nothing changed). Requires SSH key auth and a docker-group user on the target. Containers are `restart: unless-stopped` so they survive reboots.
