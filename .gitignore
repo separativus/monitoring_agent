@@ -1,2 +1,5 @@
 # Claude Code lokale Settings
 .claude/settings.local.json
+
+# Per-host settings (template: .env.example)
+.env

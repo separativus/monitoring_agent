@@ -2,6 +2,18 @@
 # `stack` label) identical on every host, regardless of checkout directory name.
 name: monitoring_agent
 
+# The compose file is identical on every host. Per-host input comes from .env
+# next to this file (template: .env.example, seeded by deploy.sh):
+#   BIND_IP             required - host address the exporters bind to
+#   CADVISOR_MEM_LIMIT  optional - default 1g   (pi: 512m)
+#   CADVISOR_CPUS       optional - default 2.0  (pi: 1.0)
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
 
   # ---------------------------------------------------------------------------
@@ -21,12 +33,17 @@ services:
       - '--path.rootfs=/rootfs'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     ports:
-      - "9100:9100"
+      - "${BIND_IP:?set BIND_IP in .env, see .env.example}:9100:9100"
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      # Probe "/" (landing page), not /metrics: wget --spider closes the
+      # connection after the headers and node-exporter then logs one
+      # "broken pipe" error per unflushed metric family, hundreds of lines
+      # every 30 s (4 GB json log on hydra before this was changed).
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9100/"]
       interval: 30s
       timeout: 5s
       retries: 3
+    logging: *logging
     mem_limit: 128m
     cpus: 0.5
 
@@ -51,11 +68,12 @@ services:
       # No dashboard uses container_fs_usage/inodes.
       - '--disable_metrics=disk,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp'
     ports:
-      - "8080:8080"
+      - "${BIND_IP:?set BIND_IP in .env, see .env.example}:8080:8080"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
-    mem_limit: 1g
-    cpus: 2.0
+    logging: *logging
+    mem_limit: ${CADVISOR_MEM_LIMIT:-1g}
+    cpus: ${CADVISOR_CPUS:-2.0}
