@@ -44,6 +44,12 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+    command:
+      # Default disabled set of v0.55.1 plus "disk": with the containerd
+      # snapshotter the per-container fs-usage walk covers the whole merged
+      # rootfs, starves the /metrics handler and OOMs the container.
+      # No dashboard uses container_fs_usage/inodes.
+      - '--disable_metrics=disk,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp'
     ports:
       - "8080:8080"
     healthcheck:
@@ -51,5 +57,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    mem_limit: 512m
-    cpus: 1.0
+    mem_limit: 1g
+    cpus: 2.0
